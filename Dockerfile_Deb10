@@ -1,0 +1,88 @@
+FROM debian:latest
+
+MAINTAINER goacid <goacid@kurty.net>
+
+LABEL Name HAProxy OSS
+LABEL Release OSS Edition
+LABEL Vendor HAProxy
+LABEL Version 2.3.2
+
+ENV HAPROXY_BRANCH 2.3
+ENV HAPROXY_MINOR 2.3.2
+ENV HAPROXY_SHA256 99cb73bb791a2cd18898d0595e14fdc820a6cbd622c762f4ed83f2884d038fd5
+ENV HAPROXY_MD5 3b1143f2e38dbbb41cfa0996666c971c
+ENV HAPROXY_SRC_URL http://www.haproxy.org/download
+
+ENV DATAPLANE_MINOR 2.1.0
+ENV DATAPLANE_SHA256 15624a2e41f326b65ca977b1b6b840b14a265a8347f4a77775cf5d9a29b9fd06
+ENV DATAPLANE_URL https://github.com/haproxytech/dataplaneapi/releases/download
+
+ENV HAPROXY_UID haproxy
+ENV HAPROXY_GID haproxy
+
+ENV DEBIAN_FRONTEND noninteractive
+
+RUN apt-get update && \
+    apt-get install -y vim procps htop telnet curl wget
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends procps libssl1.1 zlib1g "libpcre2-*" liblua5.3-0 tar curl socat ca-certificates && \
+    apt-get install -y --no-install-recommends gcc make libc6-dev libssl-dev libpcre2-dev zlib1g-dev liblua5.3-dev && \
+    curl -sfSL "$HAPROXY_SRC_URL/$HAPROXY_BRANCH/src/haproxy-$HAPROXY_MINOR.tar.gz" -o haproxy.tar.gz && \
+    echo "$HAPROXY_SHA256 *haproxy.tar.gz" | sha256sum -c - && \
+    groupadd "$HAPROXY_GID" && \
+    useradd -g "$HAPROXY_GID" "$HAPROXY_UID" && \
+    mkdir -p /tmp/haproxy && \
+    tar -xzf haproxy.tar.gz -C /tmp/haproxy --strip-components=1 && \
+    rm -f haproxy.tar.gz && \
+    make -C /tmp/haproxy -j"$(nproc)" TARGET=linux-glibc CPU=generic USE_PCRE2=1 USE_PCRE2_JIT=1 USE_REGPARM=1 USE_OPENSSL=1 \
+                            USE_ZLIB=1 USE_TFO=1 USE_LINUX_TPROXY=1 USE_LUA=1 USE_GETADDRINFO=1 \
+                            EXTRA_OBJS="contrib/prometheus-exporter/service-prometheus.o" \
+                            all && \
+    make -C /tmp/haproxy TARGET=linux-glibc install-bin install-man && \
+    ln -s /usr/local/sbin/haproxy /usr/sbin/haproxy && \
+    mkdir -p /var/lib/haproxy && \
+    chown "$HAPROXY_UID:$HAPROXY_GID" /var/lib/haproxy && \
+    mkdir -p /usr/local/etc/haproxy && \
+    ln -s /usr/local/etc/haproxy /etc/haproxy && \
+    cp -R /tmp/haproxy/examples/errorfiles /usr/local/etc/haproxy/errors && \
+    rm -rf /tmp/haproxy && \
+    apt-get purge -y --auto-remove gcc make libc6-dev libssl-dev libpcre2-dev zlib1g-dev liblua5.3-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* 
+#    curl -sfSL "${DATAPLANE_URL}/v${DATAPLANE_MINOR}/dataplaneapi_${DATAPLANE_MINOR}_Linux_x86_64.tar.gz" -o dataplane.tar.gz && \
+#    echo "$DATAPLANE_SHA256 *dataplane.tar.gz" | sha256sum -c - && \
+#    mkdir /tmp/dataplane && \
+#    tar -xzf dataplane.tar.gz -C /tmp/dataplane --strip-components=1 && \
+#    rm -f dataplane.tar.gz && \
+#    mv /tmp/dataplane/dataplaneapi /usr/local/bin/dataplaneapi && \
+#    chmod +x /usr/local/bin/dataplaneapi && \
+#    ln -s /usr/local/bin/dataplaneapi /usr/bin/dataplaneapi && \
+#    rm -rf /tmp/dataplane
+
+# Supervisor
+RUN apt-get update
+RUN apt-get install -y supervisor && mkdir -p /var/log/supervisor
+RUN apt-get install -y python-pip && pip install supervisor-stdout 
+
+#Install Letsencrypt for haproxy
+RUN apt-get -y install certbot
+RUN apt-get -y install unzip
+
+RUN cd /tmp &&\
+    wget https://github.com/janeczku/haproxy-acme-validation-plugin/archive/0.1.1.zip &&\
+    unzip 0.1.1.zip &&\
+    cd haproxy-acme-validation-plugin-0.1.1/ &&\
+    mv acme-http01-webroot.lua /etc/haproxy/ &&\
+    mv cert-renewal-haproxy.sh /etc/haproxy/ &&\
+    echo "for domain in `ls /etc/letsencrypt/live/|grep -v README` ; do cat /etc/letsencrypt/live/$domain/privkey.pem /etc/letsencrypt/live/$domain/fullchain.pem | tee /etc/haproxy/certs/$domain.pem >/dev/null; done" > /etc/haproxy/tee.sh &&\
+    echo "letsencrypt certonly --text --webroot --webroot-path   /var/tmp -d mail1.kurty.net -d webmail.kurty.net --renew-by-default --agree-tos   --email goacid@kurty.net" > /etc/haproxy/renew.sh
+
+#Clean apt datas
+RUN apt-get upgrade -y
+RUN apt-get clean
+RUN rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+#Supervisor will launch all needed process
+COPY datas/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+CMD ["/usr/bin/supervisord"]

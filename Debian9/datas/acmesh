@@ -1,0 +1,1 @@
+10 22 */27 * * root /root/.acme.sh/acme.sh --cron --home /root/.acme.sh 2>&1 >/dev/null
